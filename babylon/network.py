@@ -7,12 +7,22 @@ import zlib
 class BMessage(object):
     PRIMITIVES_TYPES = ('str', 'float', 'int', 'bool')
 
-    def __init__(self, sender='', receiver='' ):
+    def __init__(self, sender='', receiver='', action='' ):
         self._sender = sender
         self._receiver = receiver
+        self._action = str(action)
         self._timestamp = time.time()
         self._fields = {}
         self._payload = {}
+
+    def getSender(self):
+        return self._sender
+
+    def getReceiver(self):
+        return self._receiver
+
+    def getAction(self):
+        return self._action
 
     def addField(self, key, value):
         if isinstance(value, np.ndarray):
@@ -24,7 +34,6 @@ class BMessage(object):
 
     def getField(self, key):
         if key not in self._fields:
-            print("KEY NOT FOUND!"*20)
             return None
         tp = self._fields[key]
         if tp in BMessage.PRIMITIVES_TYPES:
@@ -33,14 +42,17 @@ class BMessage(object):
             chunks = tp.split('_')
             nptype = 'np.{}'.format(chunks[1])
             size = chunks[2].replace('(','').replace(')','').split(',')
-            arr = np.array(self._payload[key]).reshape(tuple(map(int, size)))
-            return arr
+            try:
+                arr = np.array(self._payload[key]).reshape(tuple(map(int, size)))
+                return arr
+            except:
+                return np.array(self._payload[key])
 
 
     @staticmethod
     def fromStream(s):
         obj = json.loads(s)
-        message = BMessage(sender=obj['sender'], receiver=obj['receiver'])
+        message = BMessage(sender=obj['sender'], receiver=obj['receiver'], action=obj['action'])
         message._timestamp = obj['timestamp']
         message._fields = obj['fields']
         message._payload = obj['payload']
@@ -50,6 +62,7 @@ class BMessage(object):
         msg = {
             'sender': self._sender,
             'receiver': self._receiver,
+            'action': self._action,
             'timestamp': time.time(),
             'fields': self._fields,
             'payload': self._payload
@@ -59,13 +72,16 @@ class BMessage(object):
 
 class SimpleChannel(object):
 
-    def __init__(self, host='localhost', port=5672, queue_size = 1, queue_name='simple_channel'):
+    def __init__(self, host='localhost', port=5672, queue_size = 1, topic_name='simple_channel'):
         self._host = host
         self._port = port
         self._connection = pika.BlockingConnection(pika.ConnectionParameters(host=self._host, port=self._port))
         self._channel = self._connection.channel()
-        self._queue_name = queue_name
-        self._channel.queue_declare(queue=queue_name, arguments={ "x-max-length": queue_size })
+        self._channel.exchange_declare(exchange='topic_logs', exchange_type='topic', arguments={ "x-max-length": queue_size })
+        result = self._channel.queue_declare('', arguments={ "x-max-length": queue_size })
+        self._queue_name = result.method.queue
+        self._topic_name = topic_name
+        self._channel.queue_bind(exchange='topic_logs', queue=self._queue_name, routing_key=topic_name)
         self._channel.basic_consume(queue=self._queue_name, on_message_callback=self._internalCallback, auto_ack=True)
         self._callbacks = []
 
@@ -74,8 +90,8 @@ class SimpleChannel(object):
         for cb in self._callbacks:
             cb(message)
 
-    def publish(self, message: BMessage, exchange=''):
-        self._channel.basic_publish(exchange=exchange, routing_key=self._queue_name, body=message.toStream())
+    def publish(self, message: BMessage):
+        self._channel.basic_publish(exchange='topic_logs', routing_key=self._topic_name, body=message.toStream())
 
     def close(self):
         self._connection.close()
